@@ -1,29 +1,24 @@
 "use client";
 
-import { type ReactNode } from "react";
-import { base } from "wagmi/chains";
-import { MiniKitProvider } from "@coinbase/onchainkit/minikit";
+import { WagmiProvider, createConfig, http } from 'wagmi';
+import { mainnet } from 'wagmi/chains';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-export function Providers(props: { children: ReactNode }) {
+const config = createConfig({
+  chains: [mainnet],
+  transports: {
+    [mainnet.id]: http(),
+  },
+});
+
+const queryClient = new QueryClient();
+
+export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <MiniKitProvider
-      apiKey={process.env.NEXT_PUBLIC_ONCHAINKIT_API_KEY}
-      chain={base}
-      config={{
-        appearance: {
-          mode: "auto",
-          theme: "mini-app-theme",
-          name: process.env.NEXT_PUBLIC_ONCHAINKIT_PROJECT_NAME,
-          logo: "/LogoCC.svg",
-        },
-        wallet: {
-          display: "modal",
-          termsUrl: "https://tusitio.com/terminos",
-          privacyUrl: "https://tusitio.com/privacidad",
-        },
-      }}
-    >
-      {props.children}
-    </MiniKitProvider>
+    <WagmiProvider config={config}>
+      <QueryClientProvider client={queryClient}>
+        {children}
+      </QueryClientProvider>
+    </WagmiProvider>
   );
 }

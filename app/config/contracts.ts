@@ -1,0 +1,1 @@
+export const STUDY_GUIDE_NFT_ADDRESS = '0x...'; // Reemplazar con la dirección del contrato desplegado; 

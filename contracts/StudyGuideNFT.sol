@@ -5,8 +5,9 @@ import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155URIStorage.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract StudyGuideNFT is ERC1155URIStorage, Ownable {
+contract StudyGuideNFT is ERC1155URIStorage, Ownable, ReentrancyGuard {
     using Strings for uint256;
 
     // Estructura para almacenar información de la guía
@@ -23,18 +24,58 @@ contract StudyGuideNFT is ERC1155URIStorage, Ownable {
         uint256 minted;
     }
 
-    // Mapeo de IDs a guías
+    // Estructura para almacenar información de la compra
+    struct Purchase {
+        uint256 guideId;
+        address buyer;
+        address seller;
+        uint256 amount;
+        bool isDelivered;
+        bool isCompleted;
+        uint256 timestamp;
+    }
+
+    // Mapeos
     mapping(uint256 => StudyGuide) public studyGuides;
+    mapping(uint256 => Purchase) public purchases; // purchaseId => Purchase
+    mapping(uint256 => mapping(address => uint256)) public balances; // guideId => (address => amount)
+
     uint256 public guideCounter;
+    uint256 public purchaseCounter;
 
     // Eventos
-    event GuideCreated(uint256 indexed id, address indexed creator, string title, uint256 price);
-    event GuidePurchased(uint256 indexed id, address indexed buyer, uint256 amount);
-    event GuideMinted(uint256 indexed id, address indexed to, uint256 amount);
+    event GuideCreated(
+        uint256 indexed id,
+        address indexed creator,
+        string title,
+        uint256 price
+    );
+    event GuideListed(
+        uint256 indexed id,
+        address indexed seller,
+        uint256 price
+    );
+    event PurchaseInitiated(
+        uint256 indexed purchaseId,
+        uint256 indexed guideId,
+        address indexed buyer,
+        uint256 amount
+    );
+    event DeliveryConfirmed(
+        uint256 indexed purchaseId,
+        uint256 indexed guideId,
+        address indexed buyer
+    );
+    event PurchaseCompleted(
+        uint256 indexed purchaseId,
+        uint256 indexed guideId,
+        address indexed buyer,
+        address seller
+    );
 
     constructor() ERC1155("") Ownable(msg.sender) {}
 
-    // Función para crear una nueva guía
+    // Función para crear y listar una nueva guía
     function createGuide(
         string memory title,
         string memory author,
@@ -42,9 +83,9 @@ contract StudyGuideNFT is ERC1155URIStorage, Ownable {
         string memory subject,
         uint256 price,
         string memory uri
-    ) external onlyOwner returns (uint256) {
+    ) external returns (uint256) {
         require(price > 0, "Price must be greater than 0");
-        
+
         guideCounter++;
         uint256 newGuideId = guideCounter;
 
@@ -57,56 +98,129 @@ contract StudyGuideNFT is ERC1155URIStorage, Ownable {
             price: price,
             creator: msg.sender,
             isAvailable: true,
-            totalSupply: 100, // Máximo de NFTs por guía
+            totalSupply: 1, // Cada guía es única (NFT)
             minted: 0
         });
 
         _setURI(newGuideId, uri);
+
+        // Mintear el NFT al creador
+        _mint(msg.sender, newGuideId, 1, "");
+        studyGuides[newGuideId].minted++;
+
         emit GuideCreated(newGuideId, msg.sender, title, price);
-        
+        emit GuideListed(newGuideId, msg.sender, price);
+
         return newGuideId;
     }
 
-    // Función para comprar una guía
-    function purchaseGuide(uint256 guideId) external payable {
+    // Función para comprar una guía (inicia el proceso de escrow)
+    function purchaseGuide(uint256 guideId) external payable nonReentrant {
         StudyGuide storage guide = studyGuides[guideId];
         require(guide.isAvailable, "Guide not available");
         require(msg.value >= guide.price, "Insufficient payment");
-        require(guide.minted < guide.totalSupply, "All copies minted");
+        require(
+            balanceOf(guide.creator, guideId) > 0,
+            "Guide not owned by seller"
+        );
 
-        // Mintear el NFT al comprador
-        _mint(msg.sender, guideId, 1, "");
-        guide.minted++;
+        purchaseCounter++;
+        uint256 newPurchaseId = purchaseCounter;
 
-        // Transferir el pago al creador
-        payable(guide.creator).transfer(msg.value);
+        purchases[newPurchaseId] = Purchase({
+            guideId: guideId,
+            buyer: msg.sender,
+            seller: guide.creator,
+            amount: msg.value,
+            isDelivered: false,
+            isCompleted: false,
+            timestamp: block.timestamp
+        });
 
-        emit GuidePurchased(guideId, msg.sender, 1);
+        emit PurchaseInitiated(newPurchaseId, guideId, msg.sender, msg.value);
     }
 
-    // Función para obtener la URI de una guía específica
-    function uri(uint256 guideId) public view override returns (string memory) {
-        return _uri(guideId);
+    // Función para confirmar la entrega (proof of delivery)
+    function confirmDelivery(uint256 purchaseId) external {
+        Purchase storage purchase = purchases[purchaseId];
+        require(
+            msg.sender == purchase.buyer,
+            "Only buyer can confirm delivery"
+        );
+        require(!purchase.isDelivered, "Delivery already confirmed");
+        require(!purchase.isCompleted, "Purchase already completed");
+
+        purchase.isDelivered = true;
+
+        // Transferir el NFT al comprador
+        _safeTransferFrom(
+            purchase.seller,
+            purchase.buyer,
+            purchase.guideId,
+            1,
+            ""
+        );
+
+        // Liberar el pago al vendedor
+        payable(purchase.seller).transfer(purchase.amount);
+
+        purchase.isCompleted = true;
+
+        emit DeliveryConfirmed(purchaseId, purchase.guideId, purchase.buyer);
+        emit PurchaseCompleted(
+            purchaseId,
+            purchase.guideId,
+            purchase.buyer,
+            purchase.seller
+        );
     }
 
-    // Función para verificar si una guía está disponible
-    function isGuideAvailable(uint256 guideId) external view returns (bool) {
-        return studyGuides[guideId].isAvailable && 
-               studyGuides[guideId].minted < studyGuides[guideId].totalSupply;
+    // Función para obtener información de una compra
+    function getPurchaseInfo(
+        uint256 purchaseId
+    )
+        external
+        view
+        returns (
+            uint256 guideId,
+            address buyer,
+            address seller,
+            uint256 amount,
+            bool isDelivered,
+            bool isCompleted,
+            uint256 timestamp
+        )
+    {
+        Purchase storage purchase = purchases[purchaseId];
+        return (
+            purchase.guideId,
+            purchase.buyer,
+            purchase.seller,
+            purchase.amount,
+            purchase.isDelivered,
+            purchase.isCompleted,
+            purchase.timestamp
+        );
     }
 
     // Función para obtener información de una guía
-    function getGuideInfo(uint256 guideId) external view returns (
-        string memory title,
-        string memory author,
-        string memory description,
-        string memory subject,
-        uint256 price,
-        address creator,
-        bool isAvailable,
-        uint256 totalSupply,
-        uint256 minted
-    ) {
+    function getGuideInfo(
+        uint256 guideId
+    )
+        external
+        view
+        returns (
+            string memory title,
+            string memory author,
+            string memory description,
+            string memory subject,
+            uint256 price,
+            address creator,
+            bool isAvailable,
+            uint256 totalSupply,
+            uint256 minted
+        )
+    {
         StudyGuide storage guide = studyGuides[guideId];
         return (
             guide.title,
@@ -120,4 +234,18 @@ contract StudyGuideNFT is ERC1155URIStorage, Ownable {
             guide.minted
         );
     }
-} 
+
+    // Función para retirar fondos bloqueados (solo en caso de disputa)
+    function withdrawFunds(uint256 purchaseId) external onlyOwner {
+        Purchase storage purchase = purchases[purchaseId];
+        require(!purchase.isCompleted, "Purchase already completed");
+        require(
+            block.timestamp > purchase.timestamp + 30 days,
+            "Must wait 30 days"
+        );
+
+        // Devolver el dinero al comprador
+        payable(purchase.buyer).transfer(purchase.amount);
+        purchase.isCompleted = true;
+    }
+}
