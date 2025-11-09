@@ -225,14 +225,14 @@ export default function App() {
           <div className="p-4">
             <h1 className="text-2xl font-bold mb-4">Bienvenido a CampusCoin</h1>
             {!isConnected && (
-              <button
+                  <button
                 onClick={() => connect()}
                 className="bg-blue-500 text-white px-4 py-2 rounded"
               >
                 Conectar Wallet
-              </button>
+                  </button>
             )}
-          </div>
+            </div>
         );
       default:
         return null;
@@ -270,9 +270,9 @@ export default function App() {
             </div>
           )}
         </nav>
-        {renderContent()}
-      </div>
-    </main>
+            {renderContent()}
+          </div>
+        </main>
   );
 }
 
